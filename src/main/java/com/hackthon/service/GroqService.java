@@ -51,6 +51,7 @@ public class GroqService {
             body.put("model", model);
             body.put("temperature", 0.7);
             body.put("max_tokens", 2048);
+            body.put("stream", false);
 
             ArrayNode messagesArray = objectMapper.createArrayNode();
 
@@ -81,8 +82,9 @@ public class GroqService {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() != 200) {
-                log.error("Groq API error {}: {}", response.statusCode(), response.body());
-                throw new RuntimeException("Groq API error: " + response.statusCode());
+                String errorBody = response.body();
+                log.error("Groq API error {}: {}", response.statusCode(), errorBody);
+                throw new RuntimeException("Groq API error: " + response.statusCode() + " - " + errorBody);
             }
 
             JsonNode json = objectMapper.readTree(response.body());

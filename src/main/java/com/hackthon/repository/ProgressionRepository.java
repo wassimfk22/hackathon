@@ -9,4 +9,5 @@ import java.util.Optional;
 @Repository
 public interface ProgressionRepository extends JpaRepository<Progression, Long> {
     Optional<Progression> findByEtudiant(Etudiant etudiant);
+    Optional<Progression> findByEtudiantId(Long etudiantId);
 }
