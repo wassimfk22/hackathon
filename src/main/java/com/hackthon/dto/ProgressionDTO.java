@@ -6,5 +6,8 @@ public record ProgressionDTO(
         int totalCours,
         int quizReussis,
         int phasesTerminees,
-        int totalPhases
+        int totalPhases,
+        int xp,
+        int niveau,
+        String titreRank
 ) {}

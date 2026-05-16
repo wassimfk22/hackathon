@@ -163,13 +163,32 @@ public class RoadMapService {
         progression.setProgressionGlobale(tauxProgression);
         progressionRepository.save(progression);
 
+        // Calcul XP : 10 XP par cours terminé + 15 XP par quiz réussi + 20 XP par phase terminée
+        int xp = (progression.getCoursTermines() * 10)
+                + (progression.getQuizReussis() * 15)
+                + (progression.getPhasesTerminees() * 20);
+
+        // Calcul du niveau basé sur l'XP (1 niveau tous les 100 XP, minimum niveau 1)
+        int niveau = Math.max(1, xp / 100);
+
+        // Titre de rang basé sur le niveau
+        String titreRank;
+        if (niveau >= 10)       titreRank = "Maître";
+        else if (niveau >= 7)   titreRank = "Expert";
+        else if (niveau >= 5)   titreRank = "Avancé";
+        else if (niveau >= 3)   titreRank = "Intermédiaire";
+        else                    titreRank = "Débutant";
+
         return new com.hackthon.dto.ProgressionDTO(
                 tauxProgression,
                 progression.getCoursTermines(),
                 (int) totalCours,
                 progression.getQuizReussis(),
                 progression.getPhasesTerminees(),
-                (int) totalPhases
+                (int) totalPhases,
+                xp,
+                niveau,
+                titreRank
         );
     }
 

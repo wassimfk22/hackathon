@@ -1,5 +1,6 @@
 package com.hackthon.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -44,6 +45,7 @@ public class Etudiant {
     @OneToMany(mappedBy = "etudiant", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<RoadMap> roadMaps;
 
+    @JsonIgnore
     @OneToOne(mappedBy = "etudiant", cascade = CascadeType.ALL, orphanRemoval = true)
     private Progression progression;
 

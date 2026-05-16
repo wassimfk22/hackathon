@@ -1,5 +1,6 @@
 package com.hackthon.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -20,6 +21,7 @@ public class Progression {
     private int niveau;
     private String titreRank;
 
+    @JsonIgnore
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "etudiant_id", unique = true)
     private Etudiant etudiant;
