@@ -2,7 +2,6 @@ package com.hackthon.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.hackthon.dto.ProgressionDTO;
 import com.hackthon.entity.*;
 import com.hackthon.enums.StatutRoadMap;
 import com.hackthon.repository.*;
@@ -64,12 +63,10 @@ public class RoadMapService {
         log.info("Réponse Groq roadmap: {}", jsonResponse);
 
         try {
-            // Nettoyer la réponse au cas où (extraction robuste du JSON)
+            // Nettoyer la réponse au cas où
             String cleanJson = jsonResponse.trim();
-            int start = cleanJson.indexOf("{");
-            int end = cleanJson.lastIndexOf("}");
-            if (start != -1 && end != -1 && end > start) {
-                cleanJson = cleanJson.substring(start, end + 1);
+            if (cleanJson.startsWith("```")) {
+                cleanJson = cleanJson.replaceAll("```json\\n?", "").replaceAll("```\\n?", "").trim();
             }
 
             Map<String, Object> roadmapData = objectMapper.readValue(cleanJson, new TypeReference<>() {});
@@ -166,7 +163,7 @@ public class RoadMapService {
         progression.setProgressionGlobale(tauxProgression);
         progressionRepository.save(progression);
 
-        return new ProgressionDTO(
+        return new com.hackthon.dto.ProgressionDTO(
                 tauxProgression,
                 progression.getCoursTermines(),
                 (int) totalCours,
@@ -199,7 +196,4 @@ public class RoadMapService {
 
         return moyenne;
     }
-    
-    
-    
 }
