@@ -48,8 +48,11 @@ public class EvaluationService {
         String response = groqService.ask(SYSTEM_PROMPT, prompt);
         try {
             String cleanJson = response.trim();
-            if (cleanJson.startsWith("```")) {
-                cleanJson = cleanJson.replaceAll("```json\\n?", "").replaceAll("```\\n?", "").trim();
+            // Extraction robuste du JSON (cherche le premier [ et le dernier ])
+            int start = cleanJson.indexOf("[");
+            int end = cleanJson.lastIndexOf("]");
+            if (start != -1 && end != -1 && end > start) {
+                cleanJson = cleanJson.substring(start, end + 1);
             }
             return objectMapper.readValue(cleanJson, new TypeReference<>() {});
         } catch (Exception e) {
@@ -72,8 +75,11 @@ public class EvaluationService {
         String response = groqService.ask("Tu es un évaluateur technique.", prompt);
         try {
             String cleanJson = response.trim();
-            if (cleanJson.startsWith("```")) {
-                cleanJson = cleanJson.replaceAll("```json\\n?", "").replaceAll("```\\n?", "").trim();
+            // Extraction robuste du JSON (cherche le premier { et le dernier })
+            int start = cleanJson.indexOf("{");
+            int end = cleanJson.lastIndexOf("}");
+            if (start != -1 && end != -1 && end > start) {
+                cleanJson = cleanJson.substring(start, end + 1);
             }
             Map<String, String> result = objectMapper.readValue(cleanJson, new TypeReference<>() {});
             String niveauStr = result.get("niveau");
