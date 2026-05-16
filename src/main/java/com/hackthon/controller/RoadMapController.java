@@ -19,19 +19,19 @@ public class RoadMapController {
 
     private final RoadMapService roadMapService;
 
-    /**
-     * POST /api/roadmaps/generate
-     * Déclenché automatiquement après l'évaluation initiale
-     */
-    @PostMapping("/generate")
-    public ResponseEntity<RoadMap> genererRoadMap(@Valid @RequestBody com.hackthon.dto.GenererRoadMapRequest request) {
-        RoadMap roadMap = roadMapService.genererRoadMap(
-                request.etudiantId(),
-                request.domaineId(),
-                request.niveau()
-        );
-        return ResponseEntity.ok(roadMap);
-    }
+//    /**
+//     * POST /api/roadmaps/generate
+//     * Déclenché automatiquement après l'évaluation initiale
+//     */
+//    @PostMapping("/generate")
+//    public ResponseEntity<RoadMap> genererRoadMap(@Valid @RequestBody com.hackthon.dto.GenererRoadMapRequest request) {
+//        RoadMap roadMap = roadMapService.genererRoadMap(
+//                request.etudiantId(),
+//                request.domaineId(),
+//                request.niveau()
+//        );
+//        return ResponseEntity.ok(roadMap);
+//    }
 
     /**
      * GET /api/roadmaps/{etudiantId}

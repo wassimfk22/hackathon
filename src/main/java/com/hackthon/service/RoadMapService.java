@@ -2,11 +2,22 @@ package com.hackthon.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.hackthon.entity.*;
+import com.hackthon.dto.ChatResponse.PhaseDTO;
+import com.hackthon.dto.ProgressionDTO;
+import com.hackthon.entity.Cours;
+import com.hackthon.entity.Domaine;
+import com.hackthon.entity.Etudiant;
+import com.hackthon.entity.Phase;
+import com.hackthon.entity.Progression;
+import com.hackthon.entity.RoadMap;
+import com.hackthon.enums.Niveau;
 import com.hackthon.enums.StatutRoadMap;
 import com.hackthon.repository.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,7 +27,6 @@ import java.util.List;
 import java.util.Map;
 
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class RoadMapService {
 
@@ -29,106 +39,152 @@ public class RoadMapService {
     private final CoursRepository coursRepository;
     private final ObjectMapper objectMapper;
 
-    private static final String SYSTEM_ROADMAP = """
-            Tu es un expert pédagogique en développement logiciel.
-            Réponds UNIQUEMENT en JSON valide, sans texte autour, sans markdown.
-            """;
+    // @Lazy pour éviter le cycle : RoadMapService ↔ CoursGenerationService
+    @Autowired @Lazy
+    private CoursGenerationService coursGenerationService;
 
+    public RoadMapService(GroqService groqService,
+                          RoadMapRepository roadMapRepository,
+                          PhaseRepository phaseRepository,
+                          EtudiantRepository etudiantRepository,
+                          DomaineRepository domaineRepository,
+                          ProgressionRepository progressionRepository,
+                          CoursRepository coursRepository,
+                          ObjectMapper objectMapper) {
+        this.groqService = groqService;
+        this.roadMapRepository = roadMapRepository;
+        this.phaseRepository = phaseRepository;
+        this.etudiantRepository = etudiantRepository;
+        this.domaineRepository = domaineRepository;
+        this.progressionRepository = progressionRepository;
+        this.coursRepository = coursRepository;
+        this.objectMapper = objectMapper;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // ENREGISTREMENT DEPUIS LE CHAT (appelé par ChatController)
+    // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Persiste la roadmap générée par l'IA dans le chat.
+     * Crée RoadMap → Phases → Cours (contenu vide) → Progression.
+     * Puis déclenche la génération des cours en arrière-plan.
+     */
     @Transactional
-    public RoadMap genererRoadMap(Long etudiantId, Long domaineId, String niveau) {
+    public RoadMap enregistrerRoadMapIA(Long etudiantId, String niveauStr, List<PhaseDTO> phasesIA) {
         Etudiant etudiant = etudiantRepository.findById(etudiantId)
                 .orElseThrow(() -> new RuntimeException("Étudiant non trouvé: " + etudiantId));
-        Domaine domaine = domaineRepository.findById(domaineId)
-                .orElseThrow(() -> new RuntimeException("Domaine non trouvé: " + domaineId));
 
-        String prompt = String.format("""
-                Génère une roadmap d'apprentissage pour un étudiant de niveau %s qui veut apprendre "%s".
-                La roadmap doit avoir entre 4 et 6 phases progressives.
-                Chaque phase doit avoir 2 à 4 cours.
-                
-                Réponds UNIQUEMENT avec ce JSON (sans markdown, sans texte avant ou après) :
-                {
-                  "titre": "titre de la roadmap",
-                  "phases": [
-                    {
-                      "titre": "titre de la phase",
-                      "ordrePhase": 1,
-                      "cours": ["titre cours 1", "titre cours 2"]
-                    }
-                  ]
-                }
-                """, niveau, domaine.getNom());
-
-        String jsonResponse = groqService.ask(SYSTEM_ROADMAP, prompt);
-        log.info("Réponse Groq roadmap: {}", jsonResponse);
-
-        try {
-            // Nettoyer la réponse au cas où
-            String cleanJson = jsonResponse.trim();
-            if (cleanJson.startsWith("```")) {
-                cleanJson = cleanJson.replaceAll("```json\\n?", "").replaceAll("```\\n?", "").trim();
-            }
-
-            Map<String, Object> roadmapData = objectMapper.readValue(cleanJson, new TypeReference<>() {});
-
-            // Créer la RoadMap
-            RoadMap roadMap = RoadMap.builder()
-                    .titre((String) roadmapData.get("titre"))
-                    .dateCreation(LocalDate.now())
-                    .statut(StatutRoadMap.EN_COURS)
-                    .etudiant(etudiant)
-                    .domaine(domaine)
-                    .phases(new ArrayList<>())
-                    .build();
-            roadMap = roadMapRepository.save(roadMap);
-
-            // Créer les phases
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> phasesData = (List<Map<String, Object>>) roadmapData.get("phases");
-
-            for (Map<String, Object> phaseData : phasesData) {
-                Phase phase = Phase.builder()
-                        .titre((String) phaseData.get("titre"))
-                        .ordrePhase((Integer) phaseData.get("ordrePhase"))
-                        .notePhase(0.0)
-                        .estValidee(false)
-                        .roadMap(roadMap)
-                        .cours(new ArrayList<>())
-                        .build();
-                phase = phaseRepository.save(phase);
-
-                // Créer les cours (contenu vide, sera généré à la demande)
-                @SuppressWarnings("unchecked")
-                List<String> coursTitres = (List<String>) phaseData.get("cours");
-                for (String coursTitre : coursTitres) {
-                    Cours cours = Cours.builder()
-                            .titre(coursTitre)
-                            .contenu("") // sera généré à la demande
-                            .phase(phase)
-                            .noteCours(0.0)
-                            .build();
-                    coursRepository.save(cours);
-                }
-            }
-
-            // Initialiser la progression
-            long totalCours = coursRepository.countByPhase_RoadMap(roadMap);
-            Progression progression = progressionRepository.findByEtudiant(etudiant)
-                    .orElse(Progression.builder().etudiant(etudiant).build());
-            progression.setProgressionGlobale(0.0);
-            progression.setPhasesTerminees(0);
-            progression.setCoursTermines(0);
-            progression.setQuizReussis(0);
-            progressionRepository.save(progression);
-
-            log.info("RoadMap générée avec {} phases pour étudiant {}", phasesData.size(), etudiantId);
-            return roadMap;
-
-        } catch (Exception e) {
-            log.error("Erreur parsing JSON roadmap: {}", jsonResponse, e);
-            throw new RuntimeException("Impossible de parser la réponse de l'IA: " + e.getMessage(), e);
+        // Récupérer le domaine de l'étudiant (déjà associé dans ChatController)
+        Domaine domaine = etudiant.getDomaine();
+        if (domaine == null) {
+            // Fallback : prendre le premier domaine disponible
+            domaine = domaineRepository.findAll().stream().findFirst()
+                    .orElseThrow(() -> new RuntimeException("Aucun domaine trouvé en BDD"));
         }
+
+        // Niveau de l'étudiant
+        Niveau niveau = parseNiveau(niveauStr);
+        etudiant.setNiveau(niveau);
+        etudiantRepository.save(etudiant);
+
+        // Supprimer l'ancienne roadmap EN_COURS si elle existe (on repart propre)
+        roadMapRepository.findTopByEtudiantIdOrderByDateCreationDesc(etudiantId)
+                .ifPresent(old -> {
+                    if (old.getStatut() == StatutRoadMap.EN_COURS) {
+                        roadMapRepository.delete(old);
+                        log.info("Ancienne roadmap supprimée pour étudiant {}", etudiantId);
+                    }
+                });
+
+        // Créer la RoadMap
+        String titreRoadMap = "Roadmap " + domaine.getNom() + " - " + niveau.name();
+        RoadMap roadMap = RoadMap.builder()
+                .titre(titreRoadMap)
+                .dateCreation(LocalDate.now())
+                .statut(StatutRoadMap.EN_COURS)
+                .etudiant(etudiant)
+                .domaine(domaine)
+                .phases(new ArrayList<>())
+                .build();
+        roadMap = roadMapRepository.save(roadMap);
+
+        // Créer les phases et leurs cours (contenu vide, sera généré en async)
+        List<Long> phaseIds = new ArrayList<>();
+        for (PhaseDTO phaseDTO : phasesIA) {
+            Phase phase = Phase.builder()
+                    .titre(phaseDTO.titre())
+                    .ordrePhase(phaseDTO.ordre())
+                    .notePhase(0.0)
+                    .estValidee(false)
+                    .roadMap(roadMap)
+                    .cours(new ArrayList<>())
+                    .build();
+            phase = phaseRepository.save(phase);
+            phaseIds.add(phase.getId());
+
+            for (String coursTitre : phaseDTO.cours()) {
+                Cours cours = Cours.builder()
+                        .titre(coursTitre)
+                        .contenu("")   // sera généré en arrière-plan
+                        .phase(phase)
+                        .noteCours(0.0)
+                        .build();
+                coursRepository.save(cours);
+            }
+        }
+
+        // Initialiser la progression à zéro
+        Progression progression = progressionRepository.findByEtudiant(etudiant)
+                .orElse(Progression.builder().etudiant(etudiant).build());
+        progression.setProgressionGlobale(0.0);
+        progression.setPhasesTerminees(0);
+        progression.setCoursTermines(0);
+        progression.setQuizReussis(0);
+        progressionRepository.save(progression);
+
+        log.info("RoadMap '{}' enregistrée en BDD avec {} phases pour étudiant {}",
+                titreRoadMap, phasesIA.size(), etudiantId);
+
+        // Déclencher la génération des cours en arrière-plan (non bloquant)
+        genererTousLesCourseAsync(phaseIds);
+
+        return roadMap;
     }
+
+    /**
+     * Génère le contenu de tous les cours en arrière-plan, phase par phase.
+     * Utilise @Async pour ne pas bloquer la réponse HTTP du chat.
+     */
+    /**
+     * Génère le contenu de tous les cours en arrière-plan, phase par phase.
+     * Utilise @Async pour ne pas bloquer la réponse HTTP du chat.
+     */
+    @Async
+    public void genererTousLesCourseAsync(List<Long> phaseIds) {
+        log.info("Début génération async des cours pour {} phases", phaseIds.size());
+        for (Long phaseId : phaseIds) {
+            try {
+                coursGenerationService.genererTousLesCoursDePhase(phaseId);
+                
+                // 🚀 LA SOLUTION : On force une pause de 600ms entre chaque phase 
+                // pour laisser respirer l'API de Groq et éviter l'erreur 429
+                Thread.sleep(600);
+                
+            } catch (InterruptedException e) {
+                log.error("La génération des cours a été interrompue");
+                Thread.currentThread().interrupt(); // Restaurer le statut d'interruption
+                break;
+            } catch (Exception e) {
+                log.error("Erreur génération cours phase {}: {}", phaseId, e.getMessage());
+                // On continue les autres phases même si une échoue
+            }
+        }
+        log.info("Génération async des cours terminée pour toutes les phases");
+    }
+    // ══════════════════════════════════════════════════════════════════════
+    // CONSULTATION
+    // ══════════════════════════════════════════════════════════════════════
 
     @Transactional(readOnly = true)
     public RoadMap getRoadMapByEtudiant(Long etudiantId) {
@@ -141,8 +197,8 @@ public class RoadMapService {
         return phaseRepository.findByRoadMapIdOrderByOrdrePhase(roadMapId);
     }
 
-    @Transactional(readOnly = true)
-    public com.hackthon.dto.ProgressionDTO getProgression(Long roadMapId) {
+    @Transactional
+    public ProgressionDTO getProgression(Long roadMapId) {
         RoadMap roadMap = roadMapRepository.findById(roadMapId)
                 .orElseThrow(() -> new RuntimeException("RoadMap non trouvée: " + roadMapId));
 
@@ -154,7 +210,6 @@ public class RoadMapService {
 
         double tauxProgression = 0.0;
         if (totalCours > 0) {
-            // (cours complétés × 0.5 + quizs réussis × 0.5) / total cours
             tauxProgression = ((progression.getCoursTermines() * 0.5) + (progression.getQuizReussis() * 0.5))
                     / totalCours * 100.0;
             tauxProgression = Math.min(tauxProgression, 100.0);
@@ -163,7 +218,7 @@ public class RoadMapService {
         progression.setProgressionGlobale(tauxProgression);
         progressionRepository.save(progression);
 
-        return new com.hackthon.dto.ProgressionDTO(
+        return new ProgressionDTO(
                 tauxProgression,
                 progression.getCoursTermines(),
                 (int) totalCours,
@@ -173,7 +228,7 @@ public class RoadMapService {
         );
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public double getNotePhase(Long phaseId) {
         Phase phase = phaseRepository.findById(phaseId)
                 .orElseThrow(() -> new RuntimeException("Phase non trouvée: " + phaseId));
@@ -187,63 +242,24 @@ public class RoadMapService {
                 .average()
                 .orElse(0.0);
 
-        // Mettre à jour la note de la phase
         phase.setNotePhase(moyenne);
-        if (moyenne >= 60.0) {
-            phase.setEstValidee(true);
-        }
+        if (moyenne >= 60.0) phase.setEstValidee(true);
         phaseRepository.save(phase);
 
         return moyenne;
     }
 
-    @Transactional
-    public RoadMap enregistrerRoadMapIA(Long etudiantId, String niveau, List<com.hackthon.dto.ChatResponse.PhaseDTO> phasesData) {
-        Etudiant etudiant = etudiantRepository.findById(etudiantId)
-                .orElseThrow(() -> new RuntimeException("Étudiant non trouvé: " + etudiantId));
+    // ══════════════════════════════════════════════════════════════════════
+    // UTILITAIRE
+    // ══════════════════════════════════════════════════════════════════════
 
-        Domaine domaine = etudiant.getDomaine();
-        if (domaine == null) {
-            log.warn("L'étudiant {} n'a pas de domaine, impossible de lier la roadmap.", etudiantId);
-            return null;
-        }
-
-        try {
-            etudiant.setNiveau(com.hackthon.enums.Niveau.valueOf(niveau.toUpperCase()));
-            etudiantRepository.save(etudiant);
-        } catch (Exception e) {
-            log.warn("Niveau inconnu reçu de l'IA: {}", niveau);
-        }
-
-        RoadMap roadMap = RoadMap.builder()
-                .titre("Mon parcours " + domaine.getNom() + " (" + niveau + ")")
-                .dateCreation(LocalDate.now())
-                .statut(StatutRoadMap.EN_COURS)
-                .etudiant(etudiant)
-                .domaine(domaine)
-                .phases(new ArrayList<>())
-                .build();
-        roadMap = roadMapRepository.save(roadMap);
-
-        for (com.hackthon.dto.ChatResponse.PhaseDTO phaseDTO : phasesData) {
-            Phase phase = Phase.builder()
-                    .titre(phaseDTO.titre())
-                    .ordrePhase(phaseDTO.ordre())
-                    .notePhase(0.0)
-                    .estValidee(false)
-                    .roadMap(roadMap)
-                    .cours(new ArrayList<>())
-                    .build();
-            phase = phaseRepository.save(phase);
-
-            for (String titreCours : phaseDTO.cours()) {
-                Cours cours = Cours.builder()
-                        .titre(titreCours)
-                        .phase(phase)
-                        .build();
-                coursRepository.save(cours);
-            }
-        }
-        return roadMap;
+    private Niveau parseNiveau(String niveauStr) {
+        if (niveauStr == null) return Niveau.DEBUTANT;
+        return switch (niveauStr.toUpperCase().trim()) {
+            case "INTERMEDIAIRE", "INTERMÉDIAIRE", "INTERMEDIATE" -> Niveau.INTERMEDIAIRE;
+            case "AVANCE", "AVANCÉ", "ADVANCED"                  -> Niveau.AVANCE;
+            case "EXPERT"                                          -> Niveau.EXPERT;
+            default                                                -> Niveau.DEBUTANT;
+        };
     }
 }

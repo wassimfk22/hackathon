@@ -2,9 +2,13 @@ package com.hackthon.controller;
 
 import com.hackthon.dto.ChatRequest;
 import com.hackthon.dto.ChatResponse;
+import com.hackthon.enums.ChatResponseType;
 import com.hackthon.service.AIOrchestratorService;
 import com.hackthon.service.ConversationStore;
 import com.hackthon.service.GroqService;
+import com.hackthon.service.RoadMapService;
+import com.hackthon.repository.EtudiantRepository;
+import com.hackthon.repository.DomaineRepository;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,14 +29,9 @@ public class ChatController {
     private final AIOrchestratorService orchestrator;
     private final ConversationStore conversationStore;
     private final RoadMapService roadMapService;
-    private final com.hackthon.repository.EtudiantRepository etudiantRepository;
-    private final com.hackthon.repository.DomaineRepository domaineRepository;
+    private final EtudiantRepository etudiantRepository;
+    private final DomaineRepository domaineRepository;
 
-    /**
-     * POST /api/chat
-     * Corps : { "userId": 1, "message": "Je veux apprendre Java" }
-     * Retour : ChatResponse avec type TEXT | QUIZ | SCORE | ROADMAP
-     */
     @PostMapping
     public ResponseEntity<ChatResponse> chat(@Valid @RequestBody ChatRequest request) {
         Long userId = request.userId();
@@ -40,60 +39,54 @@ public class ChatController {
 
         log.info("Chat userId={} | message={}", userId, userMessage);
 
-        // 1. Récupérer l'historique isolé de cet utilisateur
-        List<GroqService.ChatMessage> history = conversationStore.getHistory(userId);
-
-        // 2. Ajouter le message utilisateur à son historique
+        // 1. Ajouter le message utilisateur à l'historique isolé
         conversationStore.addUserMessage(userId, userMessage);
 
-        // 3. Appel Groq avec le system prompt de l'orchestrateur + historique
+        // 2. Appel Groq avec historique complet
         String rawResponse = groqService.askWithHistory(
                 orchestrator.buildSystemPrompt(),
                 conversationStore.getHistory(userId)
         );
 
-        // 4. Ajouter la réponse IA à l'historique
+        // 3. Ajouter la réponse IA à l'historique
         conversationStore.addAssistantMessage(userId, rawResponse);
 
-        // 5. Parser la réponse brute → ChatResponse structuré
-        com.hackthon.dto.ChatResponse response = orchestrator.parseGroqResponse(rawResponse);
+        // 4. Parser → ChatResponse structuré
+        ChatResponse response = orchestrator.parseGroqResponse(rawResponse);
 
-        // 6. Logique métier automatique
-        
-        // A. Si c'est un QUIZ, on essaie de détecter et fixer le domaine de l'étudiant
-        if (response.type() == com.hackthon.enums.ChatResponseType.QUIZ) {
-            etudiantRepository.findById(userId).ifPresent(etudiant -> {
-                if (etudiant.getDomaine() == null) {
-                    // Liste des domaines pour match
-                    List<String> domainesPossibles = List.of("Java", "Python", "Git", "Intelligence Artificielle", "DevOps", "Conception");
-                    for (String d : domainesPossibles) {
-                        if (userMessage.toLowerCase().contains(d.toLowerCase()) || response.message().toLowerCase().contains(d.toLowerCase())) {
-                            domaineRepository.findByNomContainingIgnoreCase(d).ifPresent(domaine -> {
-                                etudiant.setDomaine(domaine);
-                                etudiantRepository.save(etudiant);
-                                log.info("Domaine '{}' associé automatiquement à l'étudiant {}", domaine.getNom(), userId);
-                            });
-                            break;
-                        }
-                    }
-                }
-            });
+        // ── Logique métier automatique ────────────────────────────────────
+
+        // A. Associer le domaine à l'étudiant dès la détection du quiz
+        if (response.type() == ChatResponseType.QUIZ) {
+            associerDomaineEtudiant(userId, userMessage, response.message());
         }
 
-        // B. Si c'est une ROADMAP, on enregistre automatiquement en BDD
-        if (response.type() == com.hackthon.enums.ChatResponseType.ROADMAP && response.roadmap() != null) {
-            log.info("Détection d'une Roadmap pour l'utilisateur {}. Enregistrement automatique...", userId);
-            roadMapService.enregistrerRoadMapIA(userId, response.niveau(), response.roadmap());
+        // B. Roadmap détectée → on persiste TOUT automatiquement en BDD
+        //    + génération des cours en arrière-plan (@Async)
+        if (response.type() == ChatResponseType.ROADMAP && response.roadmap() != null && !response.roadmap().isEmpty()) {
+            try {
+                roadMapService.enregistrerRoadMapIA(userId, response.niveau(), response.roadmap());
+                log.info("RoadMap + cours enregistrés automatiquement pour userId={}", userId);
+            } catch (Exception e) {
+                // On ne fait pas planter la réponse si la BDD échoue
+                log.error("Erreur enregistrement roadmap BDD pour userId={}: {}", userId, e.getMessage());
+            }
+        }
+
+        // C. Score avec roadmap intégrée (type SCORE qui contient aussi une roadmap)
+        if (response.type() == ChatResponseType.SCORE && response.roadmap() != null && !response.roadmap().isEmpty()) {
+            try {
+                roadMapService.enregistrerRoadMapIA(userId, response.niveau(), response.roadmap());
+                log.info("RoadMap depuis SCORE enregistrée pour userId={}", userId);
+            } catch (Exception e) {
+                log.error("Erreur enregistrement roadmap (depuis SCORE) pour userId={}: {}", userId, e.getMessage());
+            }
         }
 
         log.info("Chat userId={} | responseType={}", userId, response.type());
         return ResponseEntity.ok(response);
     }
 
-    /**
-     * DELETE /api/chat/{userId}/reset
-     * Remet à zéro la conversation (nouvelle session)
-     */
     @DeleteMapping("/{userId}/reset")
     public ResponseEntity<Map<String, String>> reset(@PathVariable Long userId) {
         conversationStore.clear(userId);
@@ -101,15 +94,33 @@ public class ChatController {
         return ResponseEntity.ok(Map.of("message", "Conversation réinitialisée"));
     }
 
-    /**
-     * GET /api/chat/{userId}/history
-     * Retourne l'historique complet de la conversation (debug)
-     */
     @GetMapping("/{userId}/history")
     public ResponseEntity<List<GroqService.ChatMessage>> history(@PathVariable Long userId) {
         return ResponseEntity.ok(conversationStore.getHistory(userId));
     }
-    
-    
-    
+
+    // ─── Privé : association automatique du domaine ───────────────────────
+
+    private void associerDomaineEtudiant(Long userId, String userMessage, String iaMessage) {
+        etudiantRepository.findById(userId).ifPresent(etudiant -> {
+            if (etudiant.getDomaine() != null) return; // déjà associé
+
+            List<String> domainesPossibles = List.of(
+                    "Java", "Python", "Git", "Intelligence Artificielle",
+                    "DevOps", "Déploiement", "Conception"
+            );
+            String combined = (userMessage + " " + iaMessage).toLowerCase();
+
+            for (String nom : domainesPossibles) {
+                if (combined.contains(nom.toLowerCase())) {
+                    domaineRepository.findByNomContainingIgnoreCase(nom).ifPresent(domaine -> {
+                        etudiant.setDomaine(domaine);
+                        etudiantRepository.save(etudiant);
+                        log.info("Domaine '{}' associé à étudiant {}", domaine.getNom(), userId);
+                    });
+                    break;
+                }
+            }
+        });
+    }
 }
