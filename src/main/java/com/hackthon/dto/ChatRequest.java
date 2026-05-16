@@ -1,0 +1,9 @@
+package com.hackthon.dto;
+
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+
+public record ChatRequest(
+        @NotNull Long etudiantId,
+        @NotBlank String question
+) {}
