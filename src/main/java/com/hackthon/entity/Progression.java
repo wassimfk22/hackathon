@@ -16,6 +16,9 @@ public class Progression {
     private Integer phasesTerminees;
     private Integer coursTermines;
     private Integer quizReussis;
+    private int xp;
+    private int niveau;
+    private String titreRank;
 
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "etudiant_id", unique = true)
