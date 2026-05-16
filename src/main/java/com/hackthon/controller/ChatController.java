@@ -61,26 +61,18 @@ public class ChatController {
             associerDomaineEtudiant(userId, userMessage, response.message());
         }
 
-        // B. Roadmap détectée → on persiste TOUT automatiquement en BDD
-        //    + génération des cours en arrière-plan (@Async)
-        if (response.type() == ChatResponseType.ROADMAP && response.roadmap() != null && !response.roadmap().isEmpty()) {
+        // B. Roadmap détectée (directement ou via SCORE) → on persiste automatiquement en BDD
+        if (response.roadmap() != null && !response.roadmap().isEmpty()) {
+            log.info("Roadmap détectée pour userId={}, type={}, niveau={}. Tentative d'enregistrement...", 
+                    userId, response.type(), response.niveau());
             try {
                 roadMapService.enregistrerRoadMapIA(userId, response.niveau(), response.roadmap());
-                log.info("RoadMap + cours enregistrés automatiquement pour userId={}", userId);
+                log.info("✅ RoadMap + cours enregistrés avec succès pour userId={}", userId);
             } catch (Exception e) {
-                // On ne fait pas planter la réponse si la BDD échoue
-                log.error("Erreur enregistrement roadmap BDD pour userId={}: {}", userId, e.getMessage());
+                log.error("❌ Échec de l'enregistrement de la roadmap pour userId={}: {}", userId, e.getMessage(), e);
             }
-        }
-
-        // C. Score avec roadmap intégrée (type SCORE qui contient aussi une roadmap)
-        if (response.type() == ChatResponseType.SCORE && response.roadmap() != null && !response.roadmap().isEmpty()) {
-            try {
-                roadMapService.enregistrerRoadMapIA(userId, response.niveau(), response.roadmap());
-                log.info("RoadMap depuis SCORE enregistrée pour userId={}", userId);
-            } catch (Exception e) {
-                log.error("Erreur enregistrement roadmap (depuis SCORE) pour userId={}: {}", userId, e.getMessage());
-            }
+        } else {
+            log.debug("Aucune roadmap trouvée dans la réponse pour userId={}", userId);
         }
 
         log.info("Chat userId={} | responseType={}", userId, response.type());

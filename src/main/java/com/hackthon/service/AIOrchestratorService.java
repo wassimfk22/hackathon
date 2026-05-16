@@ -98,67 +98,115 @@ public class AIOrchestratorService {
     // ─── Parsing de la réponse Groq → ChatResponse ────────────────────────
 
     public ChatResponse parseGroqResponse(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return ChatResponse.text("Désolé, je n'ai pas pu générer de réponse.");
+        }
+
         try {
-            String clean = raw.trim()
-                    .replaceAll("```json\\n?", "")
-                    .replaceAll("```\\n?", "")
-                    .trim();
-
+            String clean = cleanAndExtractJson(raw);
             JsonNode root = objectMapper.readTree(clean);
-            String typeStr = root.path("type").asText("TEXT");
-            String message = root.path("message").asText("");
+            return convertJsonToResponse(root, raw);
 
-            return switch (typeStr) {
-
-                case "QUIZ" -> {
-                    List<QuizQuestion> questions = objectMapper.convertValue(
-                            root.path("questions"),
-                            new TypeReference<>() {}
-                    );
-                    yield ChatResponse.quiz(message, questions);
+        } catch (Exception e) {
+            log.warn("Premier parsing JSON échoué, tentative de secours... Error: {}", e.getMessage());
+            // Tentative de secours : si c'est du texte qui contient un bloc JSON
+            try {
+                String rescue = extractJsonBlock(raw);
+                if (rescue != null) {
+                    JsonNode root = objectMapper.readTree(cleanAndExtractJson(rescue));
+                    return convertJsonToResponse(root, raw);
                 }
+            } catch (Exception e2) {
+                log.error("Échec total du parsing JSON Groq. Raw: {}", raw);
+            }
+            return ChatResponse.text(raw);
+        }
+    }
 
-                case "SCORE" -> {
-                    int score = root.path("score").asInt(0);
-                    String niveau = root.path("niveau").asText("DEBUTANT");
+    private String cleanAndExtractJson(String raw) {
+        String clean = raw.trim();
 
-                    // Si la réponse contient aussi une roadmap
-                    if (root.has("roadmap")) {
-                        List<PhaseDTO> phases = objectMapper.convertValue(
-                                root.path("roadmap"),
-                                new TypeReference<>() {}
-                        );
-                        // On retourne ROADMAP avec le score en message
-                        yield ChatResponse.roadmap(
-                                message + " | Score : " + score + "/5",
-                                niveau,
-                                phases
-                        );
-                    }
-                    yield ChatResponse.score(message, score, niveau);
-                }
+        // 1. Supprimer les balises Markdown
+        if (clean.contains("```json")) {
+            clean = clean.substring(clean.indexOf("```json") + 7);
+        } else if (clean.contains("```")) {
+            clean = clean.substring(clean.indexOf("```") + 3);
+        }
+        if (clean.contains("```")) {
+            clean = clean.substring(0, clean.lastIndexOf("```"));
+        }
+        clean = clean.trim();
 
-                case "ROADMAP" -> {
-                    String niveau = root.path("niveau").asText("DEBUTANT");
+        // 2. Extraire le bloc { ... } le plus large
+        clean = extractJsonBlock(clean);
+
+        // 3. Nettoyer les échappements invalides (ex: \é, \à, \✅)
+        // On supprime les backslashes qui ne sont pas suivis d'un caractère d'échappement JSON standard
+        if (clean != null) {
+            clean = clean.replaceAll("\\\\(?![\\\"\\\\\\/bfnrtu])", "");
+        }
+
+        return clean != null ? clean : raw;
+    }
+
+    private String extractJsonBlock(String text) {
+        int firstBrace = text.indexOf('{');
+        int lastBrace = text.lastIndexOf('}');
+        if (firstBrace != -1 && lastBrace != -1 && lastBrace > firstBrace) {
+            return text.substring(firstBrace, lastBrace + 1);
+        }
+        return null;
+    }
+
+    private ChatResponse convertJsonToResponse(JsonNode root, String raw) {
+        String typeStr = root.path("type").asText("TEXT");
+        String message = root.path("message").asText("");
+
+        // Cas particulier : l'IA a mis un JSON stringifié dans le champ message
+        if ("TEXT".equals(typeStr) && message.trim().startsWith("{")) {
+            try {
+                JsonNode nested = objectMapper.readTree(cleanAndExtractJson(message));
+                return convertJsonToResponse(nested, raw);
+            } catch (Exception e) {
+                log.debug("Le message ressemblait à du JSON mais n'était pas parsable.");
+            }
+        }
+
+        return switch (typeStr) {
+            case "QUIZ" -> {
+                List<QuizQuestion> questions = objectMapper.convertValue(
+                        root.path("questions"),
+                        new TypeReference<>() {}
+                );
+                yield ChatResponse.quiz(message, questions);
+            }
+
+            case "SCORE" -> {
+                int score = root.path("score").asInt(0);
+                String niveau = root.path("niveau").asText("DEBUTANT");
+
+                if (root.has("roadmap")) {
                     List<PhaseDTO> phases = objectMapper.convertValue(
                             root.path("roadmap"),
                             new TypeReference<>() {}
                     );
-                    yield ChatResponse.roadmap(message, niveau, phases);
+                    yield ChatResponse.roadmap(message + " | Score : " + score + "/5", niveau, phases);
                 }
+                yield ChatResponse.score(message, score, niveau);
+            }
 
-                case "NIVEAU" -> {
-                    String niveau = root.path("niveau").asText("DEBUTANT");
-                    yield ChatResponse.score(message, -1, niveau);
-                }
+            case "ROADMAP" -> {
+                String niveau = root.path("niveau").asText("DEBUTANT");
+                List<PhaseDTO> phases = objectMapper.convertValue(
+                        root.path("roadmap"),
+                        new TypeReference<>() {}
+                );
+                yield ChatResponse.roadmap(message, niveau, phases);
+            }
 
-                default -> ChatResponse.text(message.isBlank() ? raw : message);
-            };
+            case "NIVEAU" -> ChatResponse.score(message, -1, root.path("niveau").asText("DEBUTANT"));
 
-        } catch (Exception e) {
-            log.warn("Impossible de parser le JSON Groq, retour en TEXT brut. Raw: {}", raw);
-            // Si l'IA n'a pas respecté le format JSON, on retourne le texte brut
-            return ChatResponse.text(raw);
-        }
+            default -> ChatResponse.text(message.isBlank() ? raw : message);
+        };
     }
 }
