@@ -47,10 +47,14 @@ public class EvaluationService {
 
         String response = groqService.ask(SYSTEM_PROMPT, prompt);
         try {
-            return objectMapper.readValue(response, new TypeReference<>() {});
+            String cleanJson = response.trim();
+            if (cleanJson.startsWith("```")) {
+                cleanJson = cleanJson.replaceAll("```json\\n?", "").replaceAll("```\\n?", "").trim();
+            }
+            return objectMapper.readValue(cleanJson, new TypeReference<>() {});
         } catch (Exception e) {
-            log.error("Erreur parsing questions evaluation", e);
-            throw new RuntimeException("Erreur technique lors de la génération des questions");
+            log.error("Erreur parsing questions evaluation: {}", response, e);
+            throw new RuntimeException("Erreur technique lors de la génération des questions : " + e.getMessage());
         }
     }
 
@@ -67,7 +71,11 @@ public class EvaluationService {
 
         String response = groqService.ask("Tu es un évaluateur technique.", prompt);
         try {
-            Map<String, String> result = objectMapper.readValue(response, new TypeReference<>() {});
+            String cleanJson = response.trim();
+            if (cleanJson.startsWith("```")) {
+                cleanJson = cleanJson.replaceAll("```json\\n?", "").replaceAll("```\\n?", "").trim();
+            }
+            Map<String, String> result = objectMapper.readValue(cleanJson, new TypeReference<>() {});
             String niveauStr = result.get("niveau");
             String feedback = result.get("feedback");
 

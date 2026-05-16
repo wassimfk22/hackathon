@@ -73,7 +73,11 @@ public class QuizService {
 
         String response = groqService.ask("Tu es un correcteur automatique.", prompt);
         try {
-            Map<String, Object> result = objectMapper.readValue(response, new TypeReference<>() {});
+            String cleanJson = response.trim();
+            if (cleanJson.startsWith("```")) {
+                cleanJson = cleanJson.replaceAll("```json\\n?", "").replaceAll("```\\n?", "").trim();
+            }
+            Map<String, Object> result = objectMapper.readValue(cleanJson, new TypeReference<>() {});
             double score = ((Number) result.get("score")).doubleValue();
             String feedback = (String) result.get("feedback");
             List<String> points = (List<String>) result.get("pointsAmelioration");
@@ -98,8 +102,8 @@ public class QuizService {
 
             return result;
         } catch (Exception e) {
-            log.error("Erreur analyse quiz", e);
-            throw new RuntimeException("Erreur technique lors de la correction du quiz");
+            log.error("Erreur analyse quiz: {}", response, e);
+            throw new RuntimeException("Erreur technique lors de la correction du quiz : " + e.getMessage());
         }
     }
 }
