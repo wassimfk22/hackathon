@@ -64,10 +64,12 @@ public class RoadMapService {
         log.info("Réponse Groq roadmap: {}", jsonResponse);
 
         try {
-            // Nettoyer la réponse au cas où
+            // Nettoyer la réponse au cas où (extraction robuste du JSON)
             String cleanJson = jsonResponse.trim();
-            if (cleanJson.startsWith("```")) {
-                cleanJson = cleanJson.replaceAll("```json\\n?", "").replaceAll("```\\n?", "").trim();
+            int start = cleanJson.indexOf("{");
+            int end = cleanJson.lastIndexOf("}");
+            if (start != -1 && end != -1 && end > start) {
+                cleanJson = cleanJson.substring(start, end + 1);
             }
 
             Map<String, Object> roadmapData = objectMapper.readValue(cleanJson, new TypeReference<>() {});
