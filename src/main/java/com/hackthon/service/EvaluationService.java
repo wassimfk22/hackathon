@@ -66,41 +66,68 @@ public class EvaluationService {
         Etudiant etudiant = etudiantRepository.findById(etudiantId)
                 .orElseThrow(() -> new RuntimeException("Étudiant non trouvé"));
 
-        String prompt = String.format("""
-                Analyse ces réponses d'évaluation pour le domaine %s et détermine le niveau de l'étudiant.
-                Réponses : %s
-                Réponds UNIQUEMENT avec un JSON : {"niveau": "DEBUTANT|INTERMEDIAIRE|AVANCE", "feedback": "..."}
-                """, etudiant.getDomaine().getNom(), reponses.toString());
+        if (etudiant.getDomaine() == null) {
+            throw new RuntimeException("L'étudiant n'est associé à aucun domaine d'étude.");
+        }
 
-        String response = groqService.ask("Tu es un évaluateur technique.", prompt);
         try {
+            // 1. Convertir proprement les réponses en JSON valide pour Groq
+            String reponsesJson = objectMapper.writeValueAsString(reponses);
+
+            String prompt = String.format("""
+                    Analyse ces réponses d'évaluation pour le domaine "%s" et détermine le niveau de l'étudiant.
+                    Réponses de l'étudiant : %s
+                    
+                    Tu dois impérativement choisir une valeur textuelle exacte parmi ces trois-là pour le champ "niveau" : DEBUTANT, INTERMEDIAIRE, ou AVANCE.
+                    
+                    Réponds UNIQUEMENT avec ce format JSON (sans markdown, sans texte autour) : 
+                    {"niveau": "DEBUTANT|INTERMEDIAIRE|AVANCE", "feedback": "Ton feedback ici"}
+                    """, etudiant.getDomaine().getNom(), reponsesJson);
+
+            String response = groqService.ask("Tu es un évaluateur technique rigoureux.", prompt);
+            
+            // 2. Extraction robuste du JSON
             String cleanJson = response.trim();
-            // Extraction robuste du JSON (cherche le premier { et le dernier })
             int start = cleanJson.indexOf("{");
             int end = cleanJson.lastIndexOf("}");
             if (start != -1 && end != -1 && end > start) {
                 cleanJson = cleanJson.substring(start, end + 1);
             }
+
             Map<String, String> result = objectMapper.readValue(cleanJson, new TypeReference<>() {});
             String niveauStr = result.get("niveau");
             String feedback = result.get("feedback");
 
-            etudiant.setNiveau(Niveau.valueOf(niveauStr));
+            // 3. Normalisation et repli sécurisé pour l'Enum Niveau
+            com.hackthon.enums.Niveau niveauEnum = com.hackthon.enums.Niveau.INTERMEDIAIRE; // Valeur par défaut
+            if (niveauStr != null) {
+                String cleanNiveau = niveauStr.toUpperCase().trim();
+                try {
+                    niveauEnum = com.hackthon.enums.Niveau.valueOf(cleanNiveau);
+                } catch (IllegalArgumentException e) {
+                    log.warn("Niveau renvoyé par l'IA inconnu ({}), repli sur INTERMEDIAIRE", niveauStr);
+                    // Optionnel : faire un mapping si vos Enums s'appellent autrement (ex: BEGINNER)
+                }
+            }
+
+            etudiant.setNiveau(niveauEnum);
             etudiantRepository.save(etudiant);
 
+            // 4. Enregistrement de l'évaluation
             EvaluationIA evaluation = EvaluationIA.builder()
                     .etudiant(etudiant)
                     .domaine(etudiant.getDomaine())
-                    .dateEvaluation(LocalDateTime.now())
+                    .dateEvaluation(java.time.LocalDateTime.now())
                     .resultatIA(feedback)
-                    .score(0.0) // Score symbolique ou calculé
+                    .score(0.0) 
                     .build();
             evaluationRepository.save(evaluation);
 
             return feedback;
+
         } catch (Exception e) {
-            log.error("Erreur analyse resultats evaluation", e);
-            throw new RuntimeException("Erreur technique lors de l'analyse du niveau");
+            log.error("Erreur critique lors de l'analyse des résultats", e);
+            throw new RuntimeException("Erreur technique lors de l'analyse du niveau : " + e.getMessage());
         }
     }
 }
