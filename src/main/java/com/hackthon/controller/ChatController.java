@@ -1,9 +1,7 @@
 package com.hackthon.controller;
 
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
+import com.hackthon.service.GroqService;
+import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
@@ -12,36 +10,33 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/chat")
+@RequiredArgsConstructor
 @CrossOrigin(origins = "*")
 public class ChatController {
 
-    private final ChatClient chatClient;
+    private final GroqService groqService;
 
     // Stockage temporaire en mémoire (pour le hackathon)
-    private final List<ChatMessage> conversationHistory = new ArrayList<>();
-
-    public ChatController(ChatClient.Builder builder) {
-        this.chatClient = builder.build();
-    }
+    private final List<GroqService.ChatMessage> conversationHistory = new ArrayList<>();
 
     @PostMapping
     public String chat(@RequestBody Map<String, String> request) {
         String userMessage = request.get("message");
 
-        // Ajouter le message utilisateur à l'historique
-        conversationHistory.add(new ChatMessage("user", userMessage));
+        if (userMessage == null || userMessage.isBlank()) {
+            return "Veuillez envoyer un message.";
+        }
 
-        String response = chatClient.prompt()
-                .system(getSystemPrompt())
-                .messages(convertToSpringAiMessages())
-                .user(userMessage)
-                .call()
-                .content();
+        // Ajouter le message utilisateur à l'historique
+        conversationHistory.add(new GroqService.ChatMessage("user", userMessage));
+
+        // Appel avec l'historique complet
+        String response = groqService.askWithHistory(getSystemPrompt(), conversationHistory);
 
         // Ajouter la réponse de l'IA à l'historique
-        conversationHistory.add(new ChatMessage("assistant", response));
+        conversationHistory.add(new GroqService.ChatMessage("assistant", response));
 
-        // Limiter l'historique à 15 messages pour éviter de consommer trop de tokens
+        // Limiter l'historique pour éviter de consommer trop de tokens
         if (conversationHistory.size() > 30) {
             conversationHistory.remove(0);
             conversationHistory.remove(0);
@@ -66,23 +61,5 @@ public class ChatController {
             Garde le contexte de la conversation en cours.
             Réponds en français, de façon structurée et motivante.
             """;
-    }
-
-    private List<Message> convertToSpringAiMessages() {
-        return conversationHistory.stream()
-                .map(msg -> msg.role.equals("user")
-                        ? (Message) new UserMessage(msg.content)
-                        : (Message) new AssistantMessage(msg.content))
-                .toList();
-    }
-
-    // Classe interne pour l'historique
-    private static class ChatMessage {
-        String role;
-        String content;
-        ChatMessage(String role, String content) {
-            this.role = role;
-            this.content = content;
-        }
     }
 }
