@@ -1,6 +1,8 @@
 package com.hackthon.service;
 
 import com.hackthon.dto.ChatResponse;
+import com.hackthon.dto.CoursResume;
+import com.hackthon.dto.PhaseDetailDTO;
 import com.hackthon.dto.ProgressionDTO;
 import com.hackthon.dto.RoadMapFullDTO;
 import com.hackthon.entity.*;
@@ -199,8 +201,28 @@ public class RoadMapService {
     }
 
     @Transactional(readOnly = true)
-    public List<Phase> getPhasesByRoadMap(Long roadMapId) {
-        return phaseRepository.findByRoadMapIdOrderByOrdrePhase(roadMapId);
+    public List<PhaseDetailDTO> getPhasesByRoadMap(Long roadMapId) {
+        return phaseRepository.findByRoadMapIdOrderByOrdrePhase(roadMapId).stream()
+                .map(phase -> {
+                    List<CoursResume> coursResumes = coursRepository.findByPhaseIdOrderById(phase.getId()).stream()
+                            .map(cours -> new CoursResume(
+                                    cours.getId(),
+                                    cours.getTitre(),
+                                    cours.getNoteCours() != null ? cours.getNoteCours() : 0.0,
+                                    cours.getContenu() != null && !cours.getContenu().isBlank()
+                            ))
+                            .toList();
+
+                    return new PhaseDetailDTO(
+                            phase.getId(),
+                            phase.getTitre(),
+                            phase.getOrdrePhase() != null ? phase.getOrdrePhase() : 0,
+                            phase.getNotePhase() != null ? phase.getNotePhase() : 0.0,
+                            Boolean.TRUE.equals(phase.getEstValidee()),
+                            coursResumes
+                    );
+                })
+                .toList();
     }
 
     @Transactional

@@ -1,8 +1,8 @@
 package com.hackthon.controller;
 
+import com.hackthon.dto.PhaseDetailDTO;
 import com.hackthon.dto.ProgressionDTO;
 import com.hackthon.dto.RoadMapFullDTO;
-import com.hackthon.entity.Phase;
 import com.hackthon.service.RoadMapService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -34,7 +34,7 @@ public class RoadMapController {
      * Liste les phases d'une roadmap triées par ordre
      */
     @GetMapping("/{roadmapId}/phases")
-    public ResponseEntity<List<Phase>> getPhases(@PathVariable Long roadmapId) {
+    public ResponseEntity<List<PhaseDetailDTO>> getPhases(@PathVariable Long roadmapId) {
         return ResponseEntity.ok(roadMapService.getPhasesByRoadMap(roadmapId));
     }
 
