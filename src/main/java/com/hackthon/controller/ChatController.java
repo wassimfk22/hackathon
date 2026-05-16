@@ -24,6 +24,9 @@ public class ChatController {
     private final GroqService groqService;
     private final AIOrchestratorService orchestrator;
     private final ConversationStore conversationStore;
+    private final RoadMapService roadMapService;
+    private final com.hackthon.repository.EtudiantRepository etudiantRepository;
+    private final com.hackthon.repository.DomaineRepository domaineRepository;
 
     /**
      * POST /api/chat
@@ -54,6 +57,34 @@ public class ChatController {
 
         // 5. Parser la réponse brute → ChatResponse structuré
         com.hackthon.dto.ChatResponse response = orchestrator.parseGroqResponse(rawResponse);
+
+        // 6. Logique métier automatique
+        
+        // A. Si c'est un QUIZ, on essaie de détecter et fixer le domaine de l'étudiant
+        if (response.type() == com.hackthon.enums.ChatResponseType.QUIZ) {
+            etudiantRepository.findById(userId).ifPresent(etudiant -> {
+                if (etudiant.getDomaine() == null) {
+                    // Liste des domaines pour match
+                    List<String> domainesPossibles = List.of("Java", "Python", "Git", "Intelligence Artificielle", "DevOps", "Conception");
+                    for (String d : domainesPossibles) {
+                        if (userMessage.toLowerCase().contains(d.toLowerCase()) || response.message().toLowerCase().contains(d.toLowerCase())) {
+                            domaineRepository.findByNomContainingIgnoreCase(d).ifPresent(domaine -> {
+                                etudiant.setDomaine(domaine);
+                                etudiantRepository.save(etudiant);
+                                log.info("Domaine '{}' associé automatiquement à l'étudiant {}", domaine.getNom(), userId);
+                            });
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
+        // B. Si c'est une ROADMAP, on enregistre automatiquement en BDD
+        if (response.type() == com.hackthon.enums.ChatResponseType.ROADMAP && response.roadmap() != null) {
+            log.info("Détection d'une Roadmap pour l'utilisateur {}. Enregistrement automatique...", userId);
+            roadMapService.enregistrerRoadMapIA(userId, response.niveau(), response.roadmap());
+        }
 
         log.info("Chat userId={} | responseType={}", userId, response.type());
         return ResponseEntity.ok(response);

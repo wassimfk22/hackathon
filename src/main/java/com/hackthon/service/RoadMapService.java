@@ -196,4 +196,54 @@ public class RoadMapService {
 
         return moyenne;
     }
+
+    @Transactional
+    public RoadMap enregistrerRoadMapIA(Long etudiantId, String niveau, List<com.hackthon.dto.ChatResponse.PhaseDTO> phasesData) {
+        Etudiant etudiant = etudiantRepository.findById(etudiantId)
+                .orElseThrow(() -> new RuntimeException("Étudiant non trouvé: " + etudiantId));
+
+        Domaine domaine = etudiant.getDomaine();
+        if (domaine == null) {
+            log.warn("L'étudiant {} n'a pas de domaine, impossible de lier la roadmap.", etudiantId);
+            return null;
+        }
+
+        try {
+            etudiant.setNiveau(com.hackthon.enums.Niveau.valueOf(niveau.toUpperCase()));
+            etudiantRepository.save(etudiant);
+        } catch (Exception e) {
+            log.warn("Niveau inconnu reçu de l'IA: {}", niveau);
+        }
+
+        RoadMap roadMap = RoadMap.builder()
+                .titre("Mon parcours " + domaine.getNom() + " (" + niveau + ")")
+                .dateCreation(LocalDate.now())
+                .statut(StatutRoadMap.EN_COURS)
+                .etudiant(etudiant)
+                .domaine(domaine)
+                .phases(new ArrayList<>())
+                .build();
+        roadMap = roadMapRepository.save(roadMap);
+
+        for (com.hackthon.dto.ChatResponse.PhaseDTO phaseDTO : phasesData) {
+            Phase phase = Phase.builder()
+                    .titre(phaseDTO.titre())
+                    .ordrePhase(phaseDTO.ordre())
+                    .notePhase(0.0)
+                    .estValidee(false)
+                    .roadMap(roadMap)
+                    .cours(new ArrayList<>())
+                    .build();
+            phase = phaseRepository.save(phase);
+
+            for (String titreCours : phaseDTO.cours()) {
+                Cours cours = Cours.builder()
+                        .titre(titreCours)
+                        .phase(phase)
+                        .build();
+                coursRepository.save(cours);
+            }
+        }
+        return roadMap;
+    }
 }
