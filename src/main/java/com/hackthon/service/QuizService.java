@@ -88,8 +88,9 @@ public class QuizService {
             for (String point : points) {
                 Amelioration amel = Amelioration.builder()
                         .etudiant(etudiant)
-                        .pointAmelioration(point)
-                        .dateAction(LocalDateTime.now())
+                        .quiz(quiz)
+                        .pointFaible(point)
+                        .dateCreation(LocalDateTime.now())
                         .conseilIA("Conseil IA basé sur ton erreur")
                         .build();
                 ameliorationRepository.save(amel);

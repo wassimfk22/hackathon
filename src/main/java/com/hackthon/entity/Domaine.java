@@ -17,4 +17,5 @@ public class Domaine {
 
     @Column(length = 1000)
     private String description;
+    
 }

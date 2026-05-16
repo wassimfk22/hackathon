@@ -37,6 +37,7 @@ public class EvaluationService {
             [{"question": "...", "options": ["...", "..."]}]
             """;
 
+    @Transactional(readOnly = true)
     public List<EvaluationQuestionDTO> genererQuestions(Long etudiantId) {
         Etudiant etudiant = etudiantRepository.findById(etudiantId)
                 .orElseThrow(() -> new RuntimeException("Étudiant non trouvé"));
