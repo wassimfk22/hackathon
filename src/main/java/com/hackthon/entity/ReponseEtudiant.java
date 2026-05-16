@@ -12,6 +12,8 @@ public class ReponseEtudiant {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    private Integer numeroQuestion;
+
     @Column(length = 1000)
     private String questionTexte;
 
