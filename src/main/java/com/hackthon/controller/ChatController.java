@@ -1,10 +1,16 @@
 package com.hackthon.controller;
 
+import com.hackthon.dto.ChatRequest;
+import com.hackthon.dto.ChatResponse;
+import com.hackthon.service.AIOrchestratorService;
+import com.hackthon.service.ConversationStore;
 import com.hackthon.service.GroqService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -12,54 +18,67 @@ import java.util.Map;
 @RequestMapping("/api/chat")
 @RequiredArgsConstructor
 @CrossOrigin(origins = "*")
+@Slf4j
 public class ChatController {
 
     private final GroqService groqService;
+    private final AIOrchestratorService orchestrator;
+    private final ConversationStore conversationStore;
 
-    // Stockage temporaire en mémoire (pour le hackathon)
-    private final List<GroqService.ChatMessage> conversationHistory = new ArrayList<>();
-
+    /**
+     * POST /api/chat
+     * Corps : { "userId": 1, "message": "Je veux apprendre Java" }
+     * Retour : ChatResponse avec type TEXT | QUIZ | SCORE | ROADMAP
+     */
     @PostMapping
-    public String chat(@RequestBody Map<String, String> request) {
-        String userMessage = request.get("message");
+    public ResponseEntity<ChatResponse> chat(@Valid @RequestBody ChatRequest request) {
+        Long userId = request.userId();
+        String userMessage = request.message();
 
-        if (userMessage == null || userMessage.isBlank()) {
-            return "Veuillez envoyer un message.";
-        }
+        log.info("Chat userId={} | message={}", userId, userMessage);
 
-        // Ajouter le message utilisateur à l'historique
-        conversationHistory.add(new GroqService.ChatMessage("user", userMessage));
+        // 1. Récupérer l'historique isolé de cet utilisateur
+        List<GroqService.ChatMessage> history = conversationStore.getHistory(userId);
 
-        // Appel avec l'historique complet
-        String response = groqService.askWithHistory(getSystemPrompt(), conversationHistory);
+        // 2. Ajouter le message utilisateur à son historique
+        conversationStore.addUserMessage(userId, userMessage);
 
-        // Ajouter la réponse de l'IA à l'historique
-        conversationHistory.add(new GroqService.ChatMessage("assistant", response));
+        // 3. Appel Groq avec le system prompt de l'orchestrateur + historique
+        String rawResponse = groqService.askWithHistory(
+                orchestrator.buildSystemPrompt(),
+                conversationStore.getHistory(userId)
+        );
 
-        // Limiter l'historique pour éviter de consommer trop de tokens
-        if (conversationHistory.size() > 30) {
-            conversationHistory.remove(0);
-            conversationHistory.remove(0);
-        }
+        // 4. Ajouter la réponse IA à l'historique
+        conversationStore.addAssistantMessage(userId, rawResponse);
 
-        return response;
+        // 5. Parser la réponse brute → ChatResponse structuré
+        com.hackthon.dto.ChatResponse response = orchestrator.parseGroqResponse(rawResponse);
+
+        log.info("Chat userId={} | responseType={}", userId, response.type());
+        return ResponseEntity.ok(response);
     }
 
-    private String getSystemPrompt() {
-        return """
-            Tu es un Tuteur IA spécialisé EXCLUSIVEMENT en Software Engineering et Développement IT.
-            Tu es clair, concis, pédagogique et tu ne répètes JAMAIS les mêmes phrases d'introduction.
-
-            **Règles strictes de flow :**
-            1. Commence directement par proposer 5 sujets sans longue introduction.
-            2. Une fois les sujets validés par l'utilisateur ("oui", "continuer", "ok"...), passe directement à la demande du niveau.
-            3. Si l'utilisateur choisit "Laisser moi choisir", génère immédiatement un quiz de 5 questions.
-            4. Quand l'utilisateur donne ses réponses et dit "Corriger mes réponses", corrige + donne un score + crée une roadmap.
-
-            Ne répète jamais la liste des sujets plusieurs fois.
-            Ne dis jamais "Il semble que nous recommençons" ou "je n'ai pas pu voir les messages précédents".
-            Garde le contexte de la conversation en cours.
-            Réponds en français, de façon structurée et motivante.
-            """;
+    /**
+     * DELETE /api/chat/{userId}/reset
+     * Remet à zéro la conversation (nouvelle session)
+     */
+    @DeleteMapping("/{userId}/reset")
+    public ResponseEntity<Map<String, String>> reset(@PathVariable Long userId) {
+        conversationStore.clear(userId);
+        log.info("Conversation réinitialisée pour userId={}", userId);
+        return ResponseEntity.ok(Map.of("message", "Conversation réinitialisée"));
     }
+
+    /**
+     * GET /api/chat/{userId}/history
+     * Retourne l'historique complet de la conversation (debug)
+     */
+    @GetMapping("/{userId}/history")
+    public ResponseEntity<List<GroqService.ChatMessage>> history(@PathVariable Long userId) {
+        return ResponseEntity.ok(conversationStore.getHistory(userId));
+    }
+    
+    
+    
 }
