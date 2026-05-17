@@ -260,14 +260,23 @@ public class QuizService {
         coursRepository.save(cours);
 
         // ── Mettre à jour les points de la Phase ─────────────────────────
-        double ancienPoints = phase.getPointsObtenus() != null ? phase.getPointsObtenus() : 0.0;
-        double nouveauxPoints = ancienPoints + pointsQuiz;
+        List<Cours> coursDeLaPhase = coursRepository.findByPhaseIdOrderById(phase.getId());
+        double nouveauxPoints = 0.0;
+        
+        for (Cours c : coursDeLaPhase) {
+            Quiz q = quizRepository.findByCoursIdAndEtudiantId(c.getId(), etudiant.getId()).orElse(null);
+            if (q != null && q.getScoreObtenu() != null && q.getScoreMax() != null && q.getScoreMax() > 0) {
+                nouveauxPoints += ((double) q.getScoreObtenu() / q.getScoreMax()) * POINTS_PAR_QUIZ;
+            }
+        }
+        
         phase.setPointsObtenus(nouveauxPoints);
-        phase.setNotePhase(pourcentage); // note de la dernière évaluation
 
-        double pointsMax = phase.getPointsMax() != null ? phase.getPointsMax() : POINTS_PAR_QUIZ;
-        double pourcentagePhase = nouveauxPoints / pointsMax * 100.0;
-        boolean phaseDebloquee = pourcentagePhase > 50.0;
+        double pointsMax = phase.getPointsMax() != null ? phase.getPointsMax() : (coursDeLaPhase.size() * POINTS_PAR_QUIZ);
+        double pourcentagePhase = pointsMax > 0 ? (nouveauxPoints / pointsMax * 100.0) : 0.0;
+        phase.setNotePhase(pourcentagePhase); 
+        
+        boolean phaseDebloquee = pourcentagePhase >= 50.0;
 
         if (phaseDebloquee && !Boolean.TRUE.equals(phase.getEstValidee())) {
             phase.setEstValidee(true);
