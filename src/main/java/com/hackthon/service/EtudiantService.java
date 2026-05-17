@@ -6,6 +6,8 @@ import com.hackthon.entity.Domaine;
 import com.hackthon.entity.Etudiant;
 import com.hackthon.repository.DomaineRepository;
 import com.hackthon.repository.EtudiantRepository;
+import com.hackthon.repository.CommunityPostRepository;
+import com.hackthon.repository.CommunityCommentRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,6 +21,8 @@ public class EtudiantService {
 
     private final EtudiantRepository etudiantRepository;
     private final DomaineRepository domaineRepository;
+    private final CommunityPostRepository communityPostRepository;
+    private final CommunityCommentRepository communityCommentRepository;
 
     @Transactional
     public Etudiant register(RegisterRequest request) {
@@ -44,10 +48,10 @@ public class EtudiantService {
         if (etudiant == null) {
             // Pour le hackathon : Si l'étudiant n'existe pas en BDD lors du login, on le crée à la volée !
             // Cela élimine complètement l'erreur "Identifiants incorrects" et rend l'app 100% robuste.
-            String nom = "Hackathon";
-            String prenom = "Étudiant";
+            String nom = request.nom() != null && !request.nom().isBlank() ? request.nom() : "Hackathon";
+            String prenom = request.prenom() != null && !request.prenom().isBlank() ? request.prenom() : "Étudiant";
             
-            if (request.email() != null && request.email().contains("@")) {
+            if (nom.equals("Hackathon") && prenom.equals("Étudiant") && request.email() != null && request.email().contains("@")) {
                 String localPart = request.email().split("@")[0];
                 if (localPart.contains(".")) {
                     String[] parts = localPart.split("\\.");
@@ -71,13 +75,29 @@ public class EtudiantService {
         }
         
         // Pour le hackathon : On autorise toujours la connexion si l'e-mail existe en BDD,
-        // et on met à jour le mot de passe à la volée s'il a changé pour rester synchronisé.
+        // et on met à jour le profil (nom, prénom, mot de passe) à la volée pour rester synchronisé avec Google/Firebase.
+        boolean isUpdated = false;
+        
+        if (request.nom() != null && !request.nom().isBlank() && !request.nom().equals("User") && !request.nom().equals(etudiant.getNom())) {
+            etudiant.setNom(request.nom());
+            isUpdated = true;
+        }
+        if (request.prenom() != null && !request.prenom().isBlank() && !request.prenom().equals("User") && !request.prenom().equals(etudiant.getPrenom())) {
+            etudiant.setPrenom(request.prenom());
+            isUpdated = true;
+        }
+        
         if (!etudiant.getMotDePasse().equals(request.motDePasse())) {
             if (request.motDePasse() != null && !request.motDePasse().isBlank()) {
                 etudiant.setMotDePasse(request.motDePasse());
-                return etudiantRepository.save(etudiant);
+                isUpdated = true;
             }
         }
+        
+        if (isUpdated) {
+            return etudiantRepository.save(etudiant);
+        }
+        
         return etudiant;
     }
 
@@ -98,9 +118,9 @@ public class EtudiantService {
         for (Etudiant etudiant : etudiants) {
             try {
                 List<com.hackthon.entity.RoadMap> roadMaps = etudiant.getRoadMaps();
+                double calculXp = 0.0;
                 if (roadMaps != null && !roadMaps.isEmpty()) {
                     com.hackthon.entity.RoadMap roadMap = roadMaps.get(0);
-                    double calculXp = 0.0;
                     List<com.hackthon.entity.Phase> phases = roadMap.getPhases();
                     if (phases != null) {
                         for (com.hackthon.entity.Phase p : phases) {
@@ -125,9 +145,23 @@ public class EtudiantService {
                             }
                         }
                     }
-                    etudiant.setScoreGlobal(calculXp);
-                    etudiantRepository.save(etudiant);
                 }
+                
+                // Add community XP dynamically (posts, received likes, replies)
+                List<com.hackthon.entity.CommunityPost> posts = communityPostRepository.findByEtudiantId(etudiant.getId());
+                if (posts != null) {
+                    calculXp += posts.size() * 10.0;
+                    for (com.hackthon.entity.CommunityPost post : posts) {
+                        if (post.getLikedBy() != null) {
+                            calculXp += post.getLikedBy().size() * 10.0;
+                        }
+                    }
+                }
+                long commentCount = communityCommentRepository.countByEtudiantId(etudiant.getId());
+                calculXp += commentCount * 10.0;
+                
+                etudiant.setScoreGlobal(calculXp);
+                etudiantRepository.save(etudiant);
             } catch (Exception ex) {
                 // ignorer pour robustesse
             }

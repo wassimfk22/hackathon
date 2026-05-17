@@ -1,3 +1,3 @@
 package com.hackthon.dto;
 
-public record AuthRequest(String email, String motDePasse) {}
+public record AuthRequest(String email, String motDePasse, String nom, String prenom) {}
