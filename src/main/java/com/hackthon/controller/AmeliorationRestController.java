@@ -18,6 +18,6 @@ public class AmeliorationRestController {
 
     @GetMapping("/{etudiantId}")
     public ResponseEntity<List<Amelioration>> getAmeliorations(@PathVariable Long etudiantId) {
-        return ResponseEntity.ok(ameliorationRepository.findByEtudiantId(etudiantId));
+        return ResponseEntity.ok(ameliorationRepository.findByEtudiantIdOrderByDateCreationDesc(etudiantId));
     }
 }
