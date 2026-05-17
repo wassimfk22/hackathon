@@ -23,21 +23,22 @@ public class CoursGenerationService {
     private final PhaseRepository phaseRepository;
 
     private static final String SYSTEM_COURS = """
-            Tu es un expert pédagogique en développement logiciel.
-            Tu génères des cours complets, structurés et progressifs.
+            Tu es un ingénieur senior, expert pédagogique et professeur d'université très réputé.
+            Tu génères des cours extrêmement détaillés, structurés et d'une qualité professionnelle exceptionnelle, quel que soit le domaine.
             
-            RÈGLES DE FORMAT DU COURS :
-            - Utilise des titres clairs avec === TITRE === pour chaque section
-            - Pour le code, utilise ce format :
+            RÈGLES STRICTES DE FORMAT DU COURS :
+            - Le cours doit être LONG, EXHAUSTIF et approfondi (au moins 500 à 800 mots).
+            - Utilise des titres clairs avec === TITRE === pour chaque section.
+            - Pour TOUT concept technique, donne OBLIGATOIREMENT des exemples de code concrets avec :
                 [CODE - langage]
                 // ton code ici
                 [FIN CODE]
-            - Explique chaque bloc de code juste après
-            - Utilise des exemples concrets et progressifs
-            - Ajoute des notes importantes avec → NOTE : ...
-            - Termine par un résumé avec === RÉSUMÉ ===
-            - Réponds en français uniquement
-            - Réponds DIRECTEMENT avec le contenu du cours, sans introduction méta du style "Voici le cours..."
+            - Explique ligne par ligne chaque bloc de code.
+            - Ajoute des mises en garde avec → ATTENTION : ...
+            - Ajoute des astuces de pro avec → ASTUCE PRO : ...
+            - Termine obligatoirement par un résumé avec === RÉSUMÉ ===
+            - Réponds en français uniquement, avec un ton professionnel et encourageant.
+            - NE FAIS AUCUNE INTRODUCTION ("Voici le cours..."). Commence directement par le premier titre.
             """;
 
     /**
@@ -92,24 +93,22 @@ public class CoursGenerationService {
         };
 
         String prompt = String.format("""
-                Génère un cours COMPLET sur le sujet : "%s"
+                Génère un cours COMPLET, PROFOND et HAUTEMENT TECHNIQUE sur le sujet : "%s"
                 
                 Contexte :
-                - Domaine : %s
+                - Domaine d'étude principal : %s
                 - Phase d'apprentissage : %s (phase %d)
-                - Niveau attendu : %s
+                - Niveau attendu de l'étudiant : %s
                 
                 Le cours doit contenir OBLIGATOIREMENT :
-                1. Une introduction qui explique l'utilité du sujet en situation réelle
-                2. Les concepts théoriques expliqués clairement
-                3. Des exemples de code commentés si le sujet le nécessite (avec le format [CODE] ... [FIN CODE])
-                4. Des exercices pratiques ou cas d'usage
-                5. Les erreurs courantes à éviter
-                6. Un résumé des points clés
+                1. Une introduction captivante qui explique le POURQUOI et l'utilité du sujet en situation réelle d'entreprise.
+                2. Les concepts théoriques expliqués de manière détaillée et exhaustive (comme dans une vraie documentation technique).
+                3. Des exemples de code concrets, complexes et abondamment commentés (avec le format [CODE] ... [FIN CODE]).
+                4. Des cas d'usage avancés et des exercices pratiques.
+                5. Les pièges et erreurs courantes à éviter en production.
+                6. Un résumé des points clés.
                 
-                Le cours doit être suffisamment détaillé pour qu'un étudiant comprenne sans aide extérieure.
-                Si le sujet implique du code (boucles, fonctions, classes, requêtes SQL, commandes Git, etc.),
-                donne OBLIGATOIREMENT des exemples de code concrets et commentés.
+                INSTRUCTION VITALE : Ce cours doit faire au moins 600 mots. Ne survole pas le sujet. Creuse chaque point. Fournis des exemples de code pertinents même pour des sujets abstraits.
                 """,
                 coursNom, domaine, phaseNom, ordrePhase, niveauApprox
         );

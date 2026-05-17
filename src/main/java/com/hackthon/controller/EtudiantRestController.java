@@ -34,4 +34,9 @@ public class EtudiantRestController {
             @PathVariable Long domaineId) {
         return ResponseEntity.ok(etudiantService.choisirDomaine(etudiantId, domaineId));
     }
+
+    @GetMapping("/leaderboard")
+    public ResponseEntity<java.util.List<com.hackthon.dto.LeaderboardUserDTO>> getLeaderboard() {
+        return ResponseEntity.ok(etudiantService.getLeaderboard());
+    }
 }

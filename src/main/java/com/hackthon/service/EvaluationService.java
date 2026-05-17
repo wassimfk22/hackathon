@@ -29,6 +29,7 @@ public class EvaluationService {
     private final EtudiantRepository etudiantRepository;
     private final DomaineRepository domaineRepository;
     private final ObjectMapper objectMapper;
+    private final RoadMapService roadMapService;
 
     private static final String SYSTEM_PROMPT = """
             Tu es un expert en recrutement technique. 
@@ -122,6 +123,14 @@ public class EvaluationService {
                     .score(0.0) 
                     .build();
             evaluationRepository.save(evaluation);
+
+            // 5. Générer automatiquement la roadmap de l'étudiant
+            try {
+                roadMapService.genererEtEnregistrerRoadMapPourEtudiant(etudiantId);
+                log.info("✅ Roadmap générée automatiquement après soumission d'évaluation pour l'étudiant {}", etudiantId);
+            } catch (Exception e) {
+                log.error("Erreur lors de la génération automatique de la roadmap pour l'étudiant {}", etudiantId, e);
+            }
 
             return feedback;
 

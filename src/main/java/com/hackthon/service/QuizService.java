@@ -29,13 +29,14 @@ public class QuizService {
     private final ReponseEtudiantRepository reponseEtudiantRepository;
     private final ProgressionRepository progressionRepository;
     private final AmeliorationRepository ameliorationRepository;
+    private final BadgeService badgeService;
 
     // 10 points par quiz
     private static final int POINTS_PAR_QUIZ = 10;
 
     private static final String SYSTEM_QUIZ = """
-            Tu es un expert pédagogique. Tu génères des quiz QCM précis basés UNIQUEMENT sur le contenu fourni.
-            Réponds UNIQUEMENT en JSON valide, sans markdown, sans texte autour.
+            Tu es un concepteur pédagogique expert. Ta mission est de générer des quiz QCM d'excellente qualité, difficiles mais justes, basés UNIQUEMENT sur le cours fourni.
+            RÈGLE ABSOLUE : Tu dois répondre EXCLUSIVEMENT avec du JSON valide. N'ajoute AUCUN texte avant ou après le JSON. N'utilise pas de blocs markdown (```json). Renvoie juste les accolades {}.
             """;
 
     private static final String SYSTEM_CORRECTION = """
@@ -58,30 +59,47 @@ public class QuizService {
         if (cours.getContenu() == null || cours.getContenu().isBlank())
             throw new RuntimeException("Le cours n'a pas encore de contenu généré.");
 
-        // Si quiz déjà généré pour cet étudiant → le retourner directement
-        return quizRepository.findByCoursIdAndEtudiantId(coursId, etudiantId)
-                .filter(q -> Boolean.TRUE.equals(q.getEstGenere()))
-                .map(q -> parseQuizExistant(q, cours))
-                .orElseGet(() -> genererNouveauQuiz(cours, etudiant));
+        // Si un quiz existe déjà et a été réussi avec >= 70%, on le retourne directement
+        // Utilisation de findByCoursId car Cours <-> Quiz est une relation @OneToOne unique en BDD
+        Quiz existingQuiz = quizRepository.findByCoursId(coursId).orElse(null);
+        if (existingQuiz != null && Boolean.TRUE.equals(existingQuiz.getEstGenere())) {
+            // Associer l'étudiant actuel s'il a changé ou était absent
+            if (existingQuiz.getEtudiant() == null || !existingQuiz.getEtudiant().getId().equals(etudiantId)) {
+                existingQuiz.setEtudiant(etudiant);
+                existingQuiz = quizRepository.save(existingQuiz);
+            }
+
+            if (existingQuiz.getPourcentage() != null && existingQuiz.getPourcentage() >= 70.0) {
+                return parseQuizExistant(existingQuiz, cours);
+            } else {
+                log.info("L'étudiant n'a pas atteint les 70% requis pour le cours id={}. Régénération du quiz en place...", coursId);
+                // Supprimer les anciennes réponses d'abord
+                reponseEtudiantRepository.deleteByQuizId(existingQuiz.getId());
+                reponseEtudiantRepository.flush();
+                return genererOuMettreAJourQuiz(cours, etudiant, existingQuiz);
+            }
+        }
+        
+        return genererOuMettreAJourQuiz(cours, etudiant, null);
     }
 
-    private QuizGeneréDTO genererNouveauQuiz(Cours cours, Etudiant etudiant) {
+    private QuizGeneréDTO genererOuMettreAJourQuiz(Cours cours, Etudiant etudiant, Quiz existingQuiz) {
         Phase phase = cours.getPhase();
 
         String prompt = String.format("""
-                Génère un quiz de 5 questions QCM basé EXCLUSIVEMENT sur ce contenu de cours.
+                Génère un quiz de 5 questions QCM de NIVEAU AVANCÉ basé EXCLUSIVEMENT sur le contenu de cours ci-dessous.
+                Même si le cours semble général, trouve 5 points précis à tester.
                 
                 COURS : %s
                 CONTENU :
                 %s
                 
                 RÈGLES STRICTES :
-                - 5 questions exactement
-                - Chaque question a 4 options : A, B, C, D
-                - Les questions doivent tester la compréhension réelle du cours
-                - Ne pose PAS de questions hors du contenu du cours
+                - Génère EXACTEMENT 5 questions.
+                - Chaque question doit avoir EXACTEMENT 4 options : "A) ...", "B) ...", "C) ...", "D) ...".
+                - Ne pose JAMAIS de questions hors du contexte du texte fourni.
                 
-                Réponds UNIQUEMENT avec ce JSON (sans markdown) :
+                FORMAT JSON ATTENDU (Renvoie UNIQUEMENT ça, SANS COMMENTAIRES NI MARKDOWN) :
                 {
                   "questions": [
                     {
@@ -89,25 +107,45 @@ public class QuizService {
                       "question": "Texte de la question ?",
                       "options": ["A) ...", "B) ...", "C) ...", "D) ..."],
                       "bonneReponse": "A",
-                      "explication": "Explication courte de la bonne réponse"
+                      "explication": "Explication claire de la bonne réponse"
                     }
                   ]
                 }
                 """, cours.getTitre(), cours.getContenu());
 
-        log.info("Génération quiz pour cours '{}' étudiant {}", cours.getTitre(), etudiant.getId());
-        String raw = groqService.ask(SYSTEM_QUIZ, prompt);
+        log.info("Génération/Mise à jour quiz pour cours '{}' étudiant {}", cours.getTitre(), etudiant.getId());
+        
+        List<Map<String, Object>> questionsRaw = null;
+        String questionsJson = null;
 
         try {
-            String clean = raw.trim().replaceAll("```json\\n?", "").replaceAll("```\\n?", "").trim();
+            String raw = groqService.ask(SYSTEM_QUIZ, prompt);
+            String clean = extractJson(raw);
             Map<String, Object> parsed = objectMapper.readValue(clean, new TypeReference<>() {});
-
+            
             @SuppressWarnings("unchecked")
-            List<Map<String, Object>> questionsRaw = (List<Map<String, Object>>) parsed.get("questions");
+            List<Map<String, Object>> qRaw = (List<Map<String, Object>>) parsed.get("questions");
+            if (qRaw != null && !qRaw.isEmpty()) {
+                questionsRaw = qRaw;
+                questionsJson = objectMapper.writeValueAsString(questionsRaw);
+            }
+        } catch (Exception e) {
+            log.warn("L'IA a échoué à générer le quiz ou le JSON est invalide pour le cours '{}'. Utilisation du générateur de quiz de secours. Raison : {}", cours.getTitre(), e.getMessage());
+        }
 
-            // Stocker les questions en JSON dans le Quiz (avec bonnes réponses)
-            String questionsJson = objectMapper.writeValueAsString(questionsRaw);
+        // Si la génération par l'IA a échoué, on génère le quiz de secours
+        if (questionsRaw == null || questionsRaw.isEmpty()) {
+            try {
+                questionsJson = genererQuizFallback(cours);
+                questionsRaw = objectMapper.readValue(questionsJson, new TypeReference<>() {});
+            } catch (Exception ex) {
+                log.error("Erreur critique lors de la génération du quiz de secours", ex);
+                questionsRaw = new ArrayList<>();
+                questionsJson = "[]";
+            }
+        }
 
+        try {
             // Calculer les pointsMax de la phase (POINTS_PAR_QUIZ par cours)
             long nbCours = coursRepository.findByPhaseIdOrderById(phase.getId()).size();
             double pointsMaxPhase = nbCours * POINTS_PAR_QUIZ;
@@ -115,24 +153,42 @@ public class QuizService {
             if (phase.getPointsObtenus() == null) phase.setPointsObtenus(0.0);
             phaseRepository.save(phase);
 
-            // Créer le Quiz en BDD
-            Quiz quiz = Quiz.builder()
-                    .titre("Quiz — " + cours.getTitre())
-                    .estGenere(true)
-                    .estReussi(false)
-                    .scoreObtenu(0)
-                    .scoreMax(questionsRaw.size())
-                    .pourcentage(0.0)
-                    .questionsJson(questionsJson)
-                    .cours(cours)
-                    .etudiant(etudiant)
-                    .build();
+            Quiz quiz;
+            if (existingQuiz != null) {
+                // Mettre à jour le quiz existant en place
+                quiz = existingQuiz;
+                quiz.setTitre("Quiz — " + cours.getTitre());
+                quiz.setEstGenere(true);
+                quiz.setEstReussi(false);
+                quiz.setScoreObtenu(0);
+                quiz.setScoreMax(questionsRaw.size());
+                quiz.setPourcentage(0.0);
+                quiz.setQuestionsJson(questionsJson);
+                quiz.setFeedbackIA(null);
+                quiz.setDatePassage(null);
+                quiz.setEtudiant(etudiant); // S'assurer de la bonne association de l'étudiant
+            } else {
+                // Créer le Quiz en BDD
+                quiz = Quiz.builder()
+                        .titre("Quiz — " + cours.getTitre())
+                        .estGenere(true)
+                        .estReussi(false)
+                        .scoreObtenu(0)
+                        .scoreMax(questionsRaw.size())
+                        .pourcentage(0.0)
+                        .questionsJson(questionsJson)
+                        .cours(cours)
+                        .etudiant(etudiant)
+                        .build();
+            }
             quiz = quizRepository.save(quiz);
 
-            // Mettre à jour la progression (cours terminé)
-            majProgressionCoursTermine(etudiant);
+            // Mettre à jour la progression (cours terminé) seulement si c'est la première fois
+            if (existingQuiz == null) {
+                majProgressionCoursTermine(etudiant);
+            }
 
-            log.info("Quiz id={} généré ({} questions) pour cours '{}'",
+            log.info("Quiz id={} généré/mis à jour ({} questions) pour cours '{}'",
                     quiz.getId(), questionsRaw.size(), cours.getTitre());
 
             // Retourner les questions SANS les bonnes réponses
@@ -149,8 +205,100 @@ public class QuizService {
             );
 
         } catch (Exception e) {
-            log.error("Erreur parsing quiz: {}", raw, e);
+            log.error("Erreur critique génération/sauvegarde quiz: {}", e.getMessage(), e);
             throw new RuntimeException("Erreur génération quiz: " + e.getMessage(), e);
+        }
+    }
+
+    private String extractJson(String raw) {
+        if (raw == null) return "";
+        int firstBrace = raw.indexOf("{");
+        int lastBrace = raw.lastIndexOf("}");
+        if (firstBrace != -1 && lastBrace != -1 && lastBrace > firstBrace) {
+            return raw.substring(firstBrace, lastBrace + 1);
+        }
+        return raw;
+    }
+
+    private String genererQuizFallback(Cours cours) {
+        String titre = cours.getTitre() != null ? cours.getTitre() : "Ce cours";
+        
+        List<Map<String, Object>> questions = new ArrayList<>();
+        
+        // Question 1 : Définition
+        Map<String, Object> q1 = new java.util.HashMap<>();
+        q1.put("numero", 1);
+        q1.put("question", "Quel est l'objectif principal du cours \"" + titre + "\" ?");
+        q1.put("options", List.of(
+            "A) Introduire les concepts fondamentaux et pratiques associés.",
+            "B) Remplacer tous les langages existants par un nouveau paradigme.",
+            "C) Éliminer le besoin de bases de données relationnelles.",
+            "D) Fournir une suite d'outils purement théoriques sans application."
+        ));
+        q1.put("bonneReponse", "A");
+        q1.put("explication", "Le cours vise principalement à introduire les notions et pratiques essentielles.");
+        questions.add(q1);
+
+        // Question 2 : Notion clé
+        Map<String, Object> q2 = new java.util.HashMap<>();
+        q2.put("numero", 2);
+        q2.put("question", "Selon le contenu du cours, laquelle de ces propositions est correcte ?");
+        q2.put("options", List.of(
+            "A) La syntaxe et la logique présentées sont universelles.",
+            "B) Les concepts expliqués ne s'appliquent qu'à un seul cas d'usage restreint.",
+            "C) Il n'y a pas de règles strictes à respecter.",
+            "D) Toutes les affirmations ci-dessus sont fausses."
+        ));
+        q2.put("bonneReponse", "A");
+        q2.put("explication", "Les concepts généraux enseignés s'appliquent de manière universelle dans ce domaine.");
+        questions.add(q2);
+
+        // Question 3 : Application
+        Map<String, Object> q3 = new java.util.HashMap<>();
+        q3.put("numero", 3);
+        q3.put("question", "Quelle est la meilleure pratique recommandée lors de l'application de \"" + titre + "\" ?");
+        q3.put("options", List.of(
+            "A) Adopter une approche structurée, progressive et modulaire.",
+            "B) Écrire tout le code dans un seul fichier volumineux sans le structurer.",
+            "C) Ignorer les alertes de compilation et les conventions de nommage.",
+            "D) Ne pas documenter les fonctions ni écrire de tests unitaires."
+        ));
+        q3.put("bonneReponse", "A");
+        q3.put("explication", "La modularité et la structure progressive sont cruciales pour assurer la lisibilité et la maintenance.");
+        questions.add(q3);
+
+        // Question 4 : Piège courant
+        Map<String, Object> q4 = new java.util.HashMap<>();
+        q4.put("numero", 4);
+        q4.put("question", "Quel piège courant doit-on absolument éviter d'après les principes de \"" + titre + "\" ?");
+        q4.put("options", List.of(
+            "A) La complexification excessive et le manque de clarté du code.",
+            "B) La réutilisation de composants existants et éprouvés.",
+            "C) L'optimisation des requêtes et l'écriture de commentaires pertinents.",
+            "D) L'utilisation de types de données clairs et cohérents."
+        ));
+        q4.put("bonneReponse", "A");
+        q4.put("explication", "Une complexité inutile nuit à la maintenabilité générale du projet.");
+        questions.add(q4);
+
+        // Question 5 : Synthèse
+        Map<String, Object> q5 = new java.util.HashMap<>();
+        q5.put("numero", 5);
+        q5.put("question", "Pour valider durablement les acquis sur \"" + titre + "\", quel aspect est le plus important ?");
+        q5.put("options", List.of(
+            "A) Pratiquer régulièrement par le biais d'exercices et de projets concrets.",
+            "B) Mémoriser par cœur la théorie sans jamais coder.",
+            "C) Copier-coller du code sans chercher à en comprendre le fonctionnement.",
+            "D) Attendre que les solutions soient entièrement générées de manière passive."
+        ));
+        q5.put("bonneReponse", "A");
+        q5.put("explication", "La pratique active et les projets réels sont indispensables pour fixer les concepts durablement.");
+        questions.add(q5);
+
+        try {
+            return objectMapper.writeValueAsString(questions);
+        } catch (Exception e) {
+            return "[]";
         }
     }
 
@@ -237,7 +385,7 @@ public class QuizService {
         // ── Score et pourcentage ─────────────────────────────────────────
         int scoreMax = questionsAvecReponses.size();
         double pourcentage = (double) bonnesReponses / scoreMax * 100.0;
-        boolean quizReussi = pourcentage >= 50.0;
+        boolean quizReussi = pourcentage >= 70.0;
 
         // Points obtenus sur ce quiz (proportionnel à POINTS_PAR_QUIZ)
         double pointsQuiz = (bonnesReponses / (double) scoreMax) * POINTS_PAR_QUIZ;
@@ -264,7 +412,7 @@ public class QuizService {
         double nouveauxPoints = 0.0;
         
         for (Cours c : coursDeLaPhase) {
-            Quiz q = quizRepository.findByCoursIdAndEtudiantId(c.getId(), etudiant.getId()).orElse(null);
+            Quiz q = quizRepository.findByCoursId(c.getId()).orElse(null);
             if (q != null && q.getScoreObtenu() != null && q.getScoreMax() != null && q.getScoreMax() > 0) {
                 nouveauxPoints += ((double) q.getScoreObtenu() / q.getScoreMax()) * POINTS_PAR_QUIZ;
             }
@@ -285,8 +433,48 @@ public class QuizService {
         }
         phaseRepository.save(phase);
 
+        // ── Recalculer l'XP globale (scoreGlobal) de l'Etudiant et la sauvegarder ──
+        try {
+            com.hackthon.entity.RoadMap roadMap = phase.getRoadMap();
+            if (roadMap != null) {
+                double calculXp = 0.0;
+                List<com.hackthon.entity.Phase> allPhases = phaseRepository.findByRoadMapIdOrderByOrdrePhase(roadMap.getId());
+                for (com.hackthon.entity.Phase p : allPhases) {
+                    List<com.hackthon.entity.Cours> coursDeP = coursRepository.findByPhaseIdOrderById(p.getId());
+                    boolean allCoursesPassed = !coursDeP.isEmpty();
+                    for (com.hackthon.entity.Cours c : coursDeP) {
+                        double note = c.getNoteCours() != null ? c.getNoteCours() : 0.0;
+                        if (note > 0) {
+                            int correctQuestions = (int) Math.round((note / 100.0) * 5);
+                            calculXp += correctQuestions * 10.0;
+                        }
+                        if (note >= 70.0) {
+                            calculXp += 25.0;
+                        } else {
+                            allCoursesPassed = false;
+                        }
+                    }
+                    if (allCoursesPassed) {
+                        calculXp += 100.0;
+                    }
+                }
+                etudiant.setScoreGlobal(calculXp);
+                etudiantRepository.save(etudiant);
+                log.info("XP globale (scoreGlobal) mise à jour pour l'étudiant id={}: {} XP", etudiant.getId(), calculXp);
+            }
+        } catch (Exception ex) {
+            log.error("Erreur lors de la mise à jour de l'XP globale scoreGlobal", ex);
+        }
+
         // ── Mettre à jour progression globale ────────────────────────────
         if (quizReussi) majProgressionQuizReussi(etudiant);
+
+        // ── Évaluer et attribuer les badges ──────────────────────────────
+        try {
+            badgeService.evaluerEtAttribuerBadges(etudiant.getId());
+        } catch (Exception ex) {
+            log.error("Erreur lors de l'évaluation des badges", ex);
+        }
 
         // ── Ajouter une Amélioration si points faibles ───────────────────
         if (!quizReussi) {
